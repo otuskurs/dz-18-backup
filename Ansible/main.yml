@@ -1,0 +1,85 @@
+---
+- hosts: all
+  gather_facts: true
+  become: true
+  tasks:
+  - name: Устанавливаем на client и backup сервере borgbackup 
+    ansible.builtin.shell: | 
+      apt install borgbackup -y
+- hosts: backup
+  gather_facts: true
+  become: true
+  tasks:
+  - name: Cоздаем пользователя
+    ansible.builtin.user:
+      name: borg
+      shell: /bin/bash
+  - name: Cоздаем папки
+    ansible.builtin.shell: | 
+     mkdir /home/borg/.ssh | 
+     chmod 700 /home/borg/.ssh |
+     touch /home/borg/.ssh/authorized_keys |
+     chmod 600 /home/borg/.ssh/authorized_keys
+  - name: Назначаем права на папки
+    ansible.builtin.shell: | 
+     chown borg:borg /mnt/backup/ |
+     chown borg:borg /home/borg/.ssh |
+     chown borg:borg /home/borg/.ssh/authorized_keys 
+- hosts: client
+  gather_facts: true
+  become: true
+  tasks:
+  - name: На сервере client генерим ssh ключ
+    community.crypto.openssh_keypair: 
+      path: /root/.ssh/id_ed25519
+  - name: Копируем ключь на сервер 
+    ansible.builtin.fetch: src=/root/.ssh/id_ed25519.pub dest=/root/dz-18-backup
+- hosts: backup
+  gather_facts: true
+  become: true
+  tasks:
+  - name: Копируем ключ на машину 
+    ansible.builtin.copy:
+      src: /root/dz-18-backup/192.168.91.96/root/.ssh/id_ed25519.pub
+      dest: /home/borg/.ssh/authorized_keys
+- hosts: client
+  gather_facts: true
+  become: true
+  tasks:      
+  - name: Инициализируем репозиторий borg на backup сервере с client сервера 
+    ansible.builtin.command: borg init --encryption=repokey borg@192.168.91.95:/mnt/backup/
+    environment:
+      BORG_PASSCOMMAND: 'echo ""'
+    args:
+      creates: "/mnt/backup/config"
+  - name: Запускаем для проверки создания бэкапа 
+    ansible.builtin.command: borg create --stats --list borg@192.168.91.95:/mnt/backup/::"etc-{now:%Y-%m-%d_%H:%M:%S}" /etc
+  - name: Смотрим, что у нас получилось
+    ansible.builtin.command: borg list borg@192.168.91.95:/mnt/backup/
+    register: check_status_borg_list
+  - name: Выхлоп результата
+    ansible.builtin.debug: 
+      var: check_status_borg_list.stdout_lines
+  - name: Копируем файл-сервис
+    ansible.builtin.copy:
+      src: /root/dz-18-backup/borg-backup.service
+      dest: /etc/systemd/system/
+  - name: Копируем файл-таймер
+    ansible.builtin.copy:
+      src: /root/dz-18-backup/borg-backup.timer
+      dest: /etc/systemd/system/
+  - name: перезапускаем службу
+    ansible.builtin.shell: | 
+     systemctl daemon-reload |
+     systemctl enable borg-backup.timer |
+     systemctl start borg-backup.timer
+  - name: Проверяем работу таймера
+    ansible.builtin.shell: |
+     systemctl list-timers --all
+    register: check_status_timer
+  - name: Выхлоп результата
+    ansible.builtin.debug: 
+      var: check_status_timer.stdout_lines
+
+
+ 
